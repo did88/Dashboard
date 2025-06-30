@@ -13,6 +13,8 @@ from datetime import datetime, timedelta
 import yfinance as yf
 from typing import List
 
+load_dotenv()
+
 from deepsearch_api import (
     search_symbol,
     get_company_overview,
@@ -20,8 +22,6 @@ from deepsearch_api import (
     parse_main_products,
 )
 
-
-load_dotenv()
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 app = FastAPI()

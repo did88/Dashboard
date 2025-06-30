@@ -206,6 +206,20 @@ ANALYSIS_SYSTEM_PROMPT = """
 만약 사용자 입력에 기업 이름과 정보가 JSON 등 구조화 형태로 주어진다면, 그 구조를 기반으로 해당 규칙에 따라 문장을 구성한다.
 """
 
+CHAT_FORMAT_PROMPT = """
+아래 형식에 맞춰 한국어로 답변해주세요.
+
+부도예측 결과
+<부도 가능성 한 문장>
+해당 기업 주요매출 제품
+<주요제품 또는 서비스 1>
+<주요제품 또는 서비스 2>
+
+최신뉴스
+제목: <뉴스 제목 1> <링크1>
+제목: <뉴스 제목 2> <링크2>
+"""
+
 
 class ChatRequest(BaseModel):
     message: str
@@ -238,7 +252,7 @@ async def chat(req: ChatRequest):
     ticker, stock_name = extract_ticker(user_msg)
     stock_info = build_stock_info(ticker) if ticker else None
 
-    system_content = f"{SYSTEM_PROMPT_TEMPLATE}\n사용자 투자 성향: {profile}"
+    system_content = f"{SYSTEM_PROMPT_TEMPLATE}\n{CHAT_FORMAT_PROMPT}\n사용자 투자 성향: {profile}"
     messages = [
         {"role": "system", "content": system_content},
         {"role": "user", "content": user_msg},

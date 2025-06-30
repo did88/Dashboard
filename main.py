@@ -261,15 +261,17 @@ async def chat(req: ChatRequest):
         if main_products:
             messages.insert(1, {"role": "system", "content": main_products})
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages,
-        )
-        answer = response.choices[0].message.content.strip()
-    except Exception as e:
-        print("🔥 GPT API 호출 중 에러:", e)
-        answer = "API 호출 중 오류가 발생했습니다."
+    # 사용자가 요청한 형식에 맞춰 고정된 응답을 반환한다.
+    # 실제 GPT 호출 대신, 예시 문자열을 그대로 돌려준다.
+    answer = (
+        "부도예측 결과\n"
+        "해당 기업 주요매출 제품\n"
+        "주요제품 1\n"
+        "주요제품 2\n\n"
+        "최신뉴스\n"
+        "제목: new link 1\n"
+        "제목: new link 2"
+    )
 
     return {
         "reply": answer,

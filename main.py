@@ -297,8 +297,6 @@ async def chat(req: ChatRequest):
         main_products = data["main_products"]
         return_1y = data["return_1y"]
         return_3y = data["return_3y"]
-        if main_products:
-            messages.insert(1, {"role": "system", "content": main_products})
 
     # DeepSearch에서 주요 제품과 뉴스 추출
     if overview_text and not main_products:
@@ -311,19 +309,34 @@ async def chat(req: ChatRequest):
     else:
         news_lines = ["뉴스 없음"]
 
-    # 간단한 포맷으로 부도 결과, 주요 제품, 최신 뉴스 정보를 작성
-    answer_lines = ["부도예측 결과"]
-    answer_lines.append("해당 기업 주요매출 제품")
+    context = []
     if main_products:
-        for p in main_products.split("\n"):
-            answer_lines.append(f"- {p}")
-    else:
-        answer_lines.append("정보 없음")
+        context.append("주요 제품:\n" + "\n".join(main_products.split("\n")))
+    if news_lines:
+        context.append("최신 뉴스:\n" + "\n".join(news_lines))
+    if context:
+        messages.append({"role": "system", "content": "\n".join(context)})
 
-    answer_lines.append("")
-    answer_lines.append("최신뉴스")
-    answer_lines.extend(news_lines)
-    answer = "\n".join(answer_lines)
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=messages,
+        )
+        answer = response.choices[0].message.content.strip()
+    except Exception as e:
+        print("🔥 GPT API 호출 중 에러:", e)
+        # GPT 호출 실패 시 기본 형식으로 구성
+        answer_lines = ["부도예측 결과"]
+        answer_lines.append("해당 기업 주요매출 제품")
+        if main_products:
+            for p in main_products.split("\n"):
+                answer_lines.append(f"- {p}")
+        else:
+            answer_lines.append("정보 없음")
+        answer_lines.append("")
+        answer_lines.append("최신뉴스")
+        answer_lines.extend(news_lines)
+        answer = "\n".join(answer_lines)
 
     return {
         "reply": answer,

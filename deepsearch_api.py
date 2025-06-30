@@ -2,14 +2,14 @@ import os
 import requests
 from typing import List, Optional
 
-DEEPSEARCH_API_KEY = os.getenv("DEEPSEARCH_API_KEY")
 BASE_URL = "https://api.deepsearch.com/v1"
 
 
 def _headers():
-    if not DEEPSEARCH_API_KEY:
+    key = os.getenv("DEEPSEARCH_API_KEY")
+    if not key:
         raise RuntimeError("DEEPSEARCH_API_KEY is not set")
-    return {"Authorization": f"Bearer {DEEPSEARCH_API_KEY}"}
+    return {"Authorization": f"Bearer {key}"}
 
 
 def search_symbol(company_name: str) -> Optional[str]:
@@ -21,7 +21,12 @@ def search_symbol(company_name: str) -> Optional[str]:
         data = resp.json()
         items = data.get("items")
         if items:
-            return items[0].get("symbol_id")
+            symbol = items[0].get("symbol_id")
+            print("DeepSearch search_symbol", company_name, symbol)
+            return symbol
+        print("DeepSearch search_symbol no items", company_name)
+    else:
+        print("DeepSearch search_symbol error", resp.status_code, resp.text)
     return None
 
 
@@ -31,7 +36,14 @@ def get_company_overview(symbol_id: str) -> Optional[str]:
     resp = requests.get(url, headers=_headers(), timeout=10)
     if resp.ok:
         data = resp.json()
-        return data.get("overview")
+        overview = data.get("overview")
+        print("DeepSearch get_company_overview", symbol_id, bool(overview))
+        return overview
+    print(
+        "DeepSearch get_company_overview error",
+        resp.status_code,
+        resp.text,
+    )
     return None
 
 
@@ -45,6 +57,9 @@ def get_latest_news(symbol_id: str, limit: int = 2) -> List[dict]:
         data = resp.json()
         for n in data.get("items", [])[:limit]:
             result.append({"title": n.get("title"), "link": n.get("link")})
+        print("DeepSearch get_latest_news", symbol_id, len(result))
+    else:
+        print("DeepSearch get_latest_news error", resp.status_code, resp.text)
     return result
 
 

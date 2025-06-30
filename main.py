@@ -62,6 +62,7 @@ def extract_ticker(text: str):
     return None, None
 
 
+# main.py 파일 내 fetch_stock_data 함수 수정 제안
 def fetch_stock_data(ticker: str):
     data = {
         "per": None,
@@ -92,16 +93,22 @@ def fetch_stock_data(ticker: str):
             data["main_products"] = summary[:200] + "..." if len(summary) > 200 else summary
 
         hist = yf.download(ticker, period="3y", interval="1d", progress=False)
-        if not hist.empty:
-            current = hist["Adj Close"][-1]
+        # 여기에 'Adj Close' 컬럼 존재 여부 및 데이터 유효성 검사 추가
+        if not hist.empty and "Adj Close" in hist.columns and not hist["Adj Close"].empty:
+            current = hist["Adj Close"].iloc[-1] # .iloc[-1]을 사용하여 마지막 값에 접근
             date_1y = datetime.now() - timedelta(days=365)
             date_3y = datetime.now() - timedelta(days=365 * 3)
-            past_1y = hist.loc[:str(date_1y.date())]["Adj Close"]
-            past_3y = hist.loc[:str(date_3y.date())]["Adj Close"]
-            if not past_1y.empty:
-                data["return_1y"] = round((current / past_1y[-1] - 1) * 100, 2)
-            if not past_3y.empty:
-                data["return_3y"] = round((current / past_3y[-1] - 1) * 100, 2)
+            # loc를 사용할 때, 데이터프레임이 비어있는지 다시 확인
+            past_1y_series = hist.loc[:str(date_1y.date())]["Adj Close"]
+            past_3y_series = hist.loc[:str(date_3y.date())]["Adj Close"]
+
+            if not past_1y_series.empty:
+                data["return_1y"] = round((current / past_1y_series.iloc[-1] - 1) * 100, 2)
+            if not past_3y_series.empty:
+                data["return_3y"] = round((current / past_3y_series.iloc[-1] - 1) * 100, 2)
+        else:
+            print(f"yfinance: No 'Adj Close' data or historical data found for {ticker}")
+
     except Exception as e:
         print("yfinance error", e)
 

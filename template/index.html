@@ -13,14 +13,22 @@
     /* 왼쪽 채팅 영역 */
     .chat-area {
       flex: 2;
-      position: relative;
       background: #e0e0e0;
-      padding: 20px;
-      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
     }
+    /* 채팅 메시지 영역 */
+    .chat-messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px;
+      scroll-behavior: smooth;
+      min-height: 0; /* 추가: Flex item의 최소 높이 설정 */
+    }
+
     .speech-bubble {
       position: relative;
-      max-width: 60%;
+      max-width: 80%; /* 수정: 채팅창 너비를 80%로 늘림 */
       padding: 15px;
       border-radius: 10px;
       margin-bottom: 20px;
@@ -49,12 +57,11 @@
       left: 20px;
     }
     .input-area {
-      position: absolute;
-      bottom: 0; left: 0; right: 0;
       display: flex;
       padding: 10px;
       background: #fff;
       border-top: 1px solid #ccc;
+      flex-shrink: 0;
     }
     .input-area input {
       flex: 1;
@@ -147,31 +154,30 @@
 
 <div class="container">
 
-  <!-- 왼쪽: 채팅 영역 -->
   <div class="chat-area" id="chat-area">
-    <div class="speech-bubble user-bubble">
-      사용자가 질문
-    </div>
-    <div class="speech-bubble bot-bubble">
-      부도예측 결과<br>
-      해당 기업 주요매출 제품<br>
-      주요제품 1<br>
-      주요제품 2<br><br>
-      최신뉴스<br>
-      제목: <a href="#">new link 1</a><br>
-      제목: <a href="#">new link 2</a>
+    <div class="chat-messages" id="chat-messages">
+      <div class="speech-bubble user-bubble">
+        사용자가 질문
+      </div>
+      <div class="speech-bubble bot-bubble">
+        부도예측 결과<br>
+        해당 기업 주요매출 제품<br>
+        주요제품 1<br>
+        주요제품 2<br><br>
+        최신뉴스<br>
+        제목: <a href="#">new link 1</a><br>
+        제목: <a href="#">new link 2</a>
+      </div>
     </div>
 
     <div class="input-area">
       <input id="chat-input" type="text" placeholder="이곳에 기업을 검색해주세요">
       <button id="chat-send" aria-label="검색">
-        <!-- 여기에 원하는 SVG 아이콘 삽입 -->
         🔍
       </button>
     </div>
   </div>
 
-  <!-- 오른쪽: 부가정보 패널 -->
   <div class="info-panel">
     <h2>부가정보창</h2>
 
@@ -233,7 +239,7 @@
 document.addEventListener('DOMContentLoaded', function () {
   const input = document.getElementById('chat-input');
   const button = document.getElementById('chat-send');
-  const chatArea = document.getElementById('chat-area');
+  const chatMessages = document.getElementById('chat-messages');
   const r1 = document.getElementById('return-1y');
   const r3 = document.getElementById('return-3y');
 
@@ -241,8 +247,8 @@ document.addEventListener('DOMContentLoaded', function () {
     const div = document.createElement('div');
     div.className = 'speech-bubble ' + (isUser ? 'user-bubble' : 'bot-bubble');
     div.innerHTML = text.replace(/\n/g, '<br>');
-    chatArea.insertBefore(div, chatArea.querySelector('.input-area'));
-    chatArea.scrollTop = chatArea.scrollHeight;
+    chatMessages.appendChild(div);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
   }
 
   async function sendMessage() {

@@ -1,3 +1,5 @@
+# main.py - 수정 제안
+
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
@@ -62,7 +64,6 @@ def extract_ticker(text: str):
     return None, None
 
 
-# main.py 파일 내 fetch_stock_data 함수 수정 제안
 def fetch_stock_data(ticker: str):
     data = {
         "per": None,
@@ -93,12 +94,10 @@ def fetch_stock_data(ticker: str):
             data["main_products"] = summary[:200] + "..." if len(summary) > 200 else summary
 
         hist = yf.download(ticker, period="3y", interval="1d", progress=False)
-        # 여기에 'Adj Close' 컬럼 존재 여부 및 데이터 유효성 검사 추가
         if not hist.empty and "Adj Close" in hist.columns and not hist["Adj Close"].empty:
-            current = hist["Adj Close"].iloc[-1] # .iloc[-1]을 사용하여 마지막 값에 접근
+            current = hist["Adj Close"].iloc[-1]
             date_1y = datetime.now() - timedelta(days=365)
             date_3y = datetime.now() - timedelta(days=365 * 3)
-            # loc를 사용할 때, 데이터프레임이 비어있는지 다시 확인
             past_1y_series = hist.loc[:str(date_1y.date())]["Adj Close"]
             past_3y_series = hist.loc[:str(date_3y.date())]["Adj Close"]
 
@@ -221,6 +220,7 @@ ANALYSIS_SYSTEM_PROMPT = """
 만약 사용자 입력에 기업 이름과 정보가 JSON 등 구조화 형태로 주어진다면, 그 구조를 기반으로 해당 규칙에 따라 문장을 구성한다.
 """
 
+# CHAT_FORMAT_PROMPT에서 '최신뉴스' 부분 제거
 CHAT_FORMAT_PROMPT = """
 아래 형식에 맞춰 한국어로 답변해주세요.
 
@@ -229,10 +229,6 @@ CHAT_FORMAT_PROMPT = """
 해당 기업 주요매출 제품
 <주요제품 또는 서비스 1>
 <주요제품 또는 서비스 2>
-
-최신뉴스
-제목: <뉴스 제목 1> <링크1>
-제목: <뉴스 제목 2> <링크2>
 """
 
 
@@ -311,18 +307,25 @@ async def chat(req: ChatRequest):
         if prods:
             main_products = "\n".join(prods)
 
+    # **뉴스 링크를 HTML <a> 태그로 직접 생성**
+    formatted_news_html = ""
     if news_items:
-        news_lines = [f"제목: {n['title']} {n['link']}" for n in news_items]
+        news_lines_html = []
+        for n in news_items:
+            if n.get('link'): # 링크가 존재하는지 확인
+                news_lines_html.append(f"제목: {n['title']} <a href='{n['link']}' target='_blank'>[링크]</a>")
+            else:
+                news_lines_html.append(f"제목: {n['title']} (링크 없음)")
+        formatted_news_html = "\n최신뉴스\n" + "\n".join(news_lines_html)
     else:
-        news_lines = ["뉴스 없음"]
+        formatted_news_html = "\n최신뉴스\n뉴스 없음"
 
-    context = []
+    # 주요 제품 정보만 GPT 컨텍스트에 추가
+    context_for_gpt = []
     if main_products:
-        context.append("주요 제품:\n" + "\n".join(main_products.split("\n")))
-    if news_lines:
-        context.append("최신 뉴스:\n" + "\n".join(news_lines))
-    if context:
-        messages.append({"role": "system", "content": "\n".join(context)})
+        context_for_gpt.append("주요 제품:\n" + "\n".join(main_products.split("\n")))
+    if context_for_gpt:
+        messages.append({"role": "system", "content": "\n".join(context_for_gpt)})
 
     try:
         response = client.chat.completions.create(
@@ -330,19 +333,20 @@ async def chat(req: ChatRequest):
             messages=messages,
         )
         answer = response.choices[0].message.content.strip()
+        # GPT 응답에 직접 포맷팅된 뉴스 HTML 추가
+        answer += formatted_news_html
     except Exception as e:
         print("🔥 GPT API 호출 중 에러:", e)
-        # GPT 호출 실패 시 기본 형식으로 구성
+        # GPT 호출 실패 시 기본 형식으로 구성 (뉴스도 HTML 링크로)
         answer_lines = ["부도예측 결과"]
+        answer_lines.append("API 호출 중 오류가 발생했습니다. 일부 정보를 제공할 수 없습니다.") # 오류 메시지 수정
         answer_lines.append("해당 기업 주요매출 제품")
         if main_products:
             for p in main_products.split("\n"):
                 answer_lines.append(f"- {p}")
         else:
             answer_lines.append("정보 없음")
-        answer_lines.append("")
-        answer_lines.append("최신뉴스")
-        answer_lines.extend(news_lines)
+        answer_lines.append(formatted_news_html) # 뉴스 HTML을 fallback에도 추가
         answer = "\n".join(answer_lines)
 
     return {
@@ -386,4 +390,3 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(app, host="127.0.0.1", port=8000)
-

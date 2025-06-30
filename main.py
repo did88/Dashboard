@@ -11,6 +11,14 @@ import re
 import json
 from datetime import datetime, timedelta
 import yfinance as yf
+from typing import List
+
+from deepsearch_api import (
+    search_symbol,
+    get_company_overview,
+    get_latest_news,
+    parse_main_products,
+)
 
 
 load_dotenv()
@@ -252,6 +260,23 @@ async def chat(req: ChatRequest):
     ticker, stock_name = extract_ticker(user_msg)
     stock_info = build_stock_info(ticker) if ticker else None
 
+    symbol_id = None
+    overview_text = None
+    news_items: List[dict] = []
+
+    # 검색어에 해당하는 심볼 조회
+    try:
+        symbol_id = search_symbol(stock_name or user_msg)
+    except Exception as e:
+        print("deepsearch search_symbol error", e)
+
+    if symbol_id:
+        try:
+            overview_text = get_company_overview(symbol_id)
+            news_items = get_latest_news(symbol_id, limit=2)
+        except Exception as e:
+            print("deepsearch info error", e)
+
     system_content = f"{SYSTEM_PROMPT_TEMPLATE}\n{CHAT_FORMAT_PROMPT}\n사용자 투자 성향: {profile}"
     messages = [
         {"role": "system", "content": system_content},
@@ -275,17 +300,30 @@ async def chat(req: ChatRequest):
         if main_products:
             messages.insert(1, {"role": "system", "content": main_products})
 
-    # 사용자가 요청한 형식에 맞춰 고정된 응답을 반환한다.
-    # 실제 GPT 호출 대신, 예시 문자열을 그대로 돌려준다.
-    answer = (
-        "부도예측 결과\n"
-        "해당 기업 주요매출 제품\n"
-        "주요제품 1\n"
-        "주요제품 2\n\n"
-        "최신뉴스\n"
-        "제목: new link 1\n"
-        "제목: new link 2"
-    )
+    # DeepSearch에서 주요 제품과 뉴스 추출
+    if overview_text and not main_products:
+        prods = parse_main_products(overview_text)
+        if prods:
+            main_products = "\n".join(prods)
+
+    if news_items:
+        news_lines = [f"제목: {n['title']} {n['link']}" for n in news_items]
+    else:
+        news_lines = ["뉴스 없음"]
+
+    # 간단한 포맷으로 부도 결과, 주요 제품, 최신 뉴스 정보를 작성
+    answer_lines = ["부도예측 결과"]
+    answer_lines.append("해당 기업 주요매출 제품")
+    if main_products:
+        for p in main_products.split("\n"):
+            answer_lines.append(f"- {p}")
+    else:
+        answer_lines.append("정보 없음")
+
+    answer_lines.append("")
+    answer_lines.append("최신뉴스")
+    answer_lines.extend(news_lines)
+    answer = "\n".join(answer_lines)
 
     return {
         "reply": answer,
@@ -299,6 +337,7 @@ async def chat(req: ChatRequest):
         "return_1y": return_1y,
         "return_3y": return_3y,
         "stock_info": stock_info,
+        "news": news_items,
     }
 
 

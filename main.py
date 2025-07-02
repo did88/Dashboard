@@ -1,30 +1,32 @@
-# main.py - 수정 제안
-
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-
+import pandas as pd
 from dotenv import load_dotenv
-from openai import OpenAI
+from google import generativeai as genai
 import os
 import re
-import json
 from datetime import datetime, timedelta
-import yfinance as yf
 from typing import List
+from pykrx import stock
+import matplotlib.pyplot as plt
+from pykrx import stock
+from predictor import AdvancedStockPredictor
+from fastapi.responses import HTMLResponse, StreamingResponse
+import io
 
 load_dotenv()
 
-from deepsearch_api import (
-    search_symbol,
-    get_company_overview,
-    get_latest_news,
-    parse_main_products,
-)
+genai.configure(api_key="AIzaSyAlC2_u2HwWakWbUTjBH_4W-ErwQaxWtVQ")
 
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+# from deepsearch_api import (
+#     search_symbol,
+#     get_company_overview,
+#     get_latest_news,
+#     parse_main_products,
+# )
 
 app = FastAPI()
 
@@ -36,33 +38,21 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 async def index(request: Request) -> HTMLResponse:
     return templates.TemplateResponse("index.html", {"request": request})
 
+# corp_list.csv는 'corp_name'과 'stock_code' 열이 존재해야 함
+df = pd.read_csv("corp_list.csv", dtype=str)
 
-# 한글 종목명을 yfinance용 티커로 매핑
-NAME_TO_TICKER = {
-    "삼성전자": "005930.KS",
-    "네이버": "035420.KQ",
-    "카카오": "035720.KQ",
-    "LG화학": "051910.KS",
-    "NAVER": "035420.KS",
-}
-
+# corp_name → stock_code 매핑 dict 생성
+NAME_TO_TICKER = dict(zip(df["회사명"], df["종목코드"]))
 
 def extract_ticker(text: str):
-    """사용자 입력에서 티커를 추출하거나 한글 종목명을 매핑"""
     for name, ticker in NAME_TO_TICKER.items():
         if name in text:
-            return ticker, name
-    m = re.search(r"\b\d{5,6}(?:\.(?:KS|KQ))?\b", text.upper())
+            return str(ticker).zfill(6), name
+    # 숫자 5~6자리 종목코드 직접 입력한 경우
+    m = re.search(r"\b\d{5,6}\b", text)
     if m:
-        code = m.group(0).upper()
-        if not code.endswith((".KS", ".KQ")):
-            code += ".KS"
-        return code, None
-    m = re.search(r"[A-Za-z.]{2,10}", text)
-    if m:
-        return m.group(0).upper(), None
+        return m.group(0).zfill(6), None
     return None, None
-
 
 def fetch_stock_data(ticker: str):
     data = {
@@ -77,69 +67,48 @@ def fetch_stock_data(ticker: str):
     }
 
     try:
-        tk = yf.Ticker(ticker)
-        info = tk.info
-        data["per"] = info.get("trailingPE")
-        roe = info.get("returnOnEquity")
-        if roe is not None:
-            data["roe"] = round(roe * 100, 2)
-        debt = info.get("totalDebt")
-        equity = info.get("totalStockholderEquity")
-        if debt and equity:
-            data["debt_ratio"] = round(debt / equity * 100, 2)
-        data["sales"] = info.get("totalRevenue")
-        data["market_cap"] = info.get("marketCap")
-        summary = info.get("longBusinessSummary")
-        if summary:
-            data["main_products"] = summary[:200] + "..." if len(summary) > 200 else summary
+        today = datetime.today().strftime("%Y%m%d")
+        price_df = stock.get_market_ohlcv_by_date(fromdate="20200101", todate=today, ticker=ticker)
+        if price_df.empty:
+            return data
 
-        hist = yf.download(ticker, period="3y", interval="1d", progress=False)
-        if not hist.empty and "Adj Close" in hist.columns and not hist["Adj Close"].empty:
-            current = hist["Adj Close"].iloc[-1]
-            date_1y = datetime.now() - timedelta(days=365)
-            date_3y = datetime.now() - timedelta(days=365 * 3)
-            past_1y_series = hist.loc[:str(date_1y.date())]["Adj Close"]
-            past_3y_series = hist.loc[:str(date_3y.date())]["Adj Close"]
+        current = price_df["종가"].iloc[-1]
+        
+        date_1y = (datetime.today() - timedelta(days=365)).strftime("%Y%m%d")
+        price_df_1y = price_df.loc[price_df.index >= date_1y]
+        if not price_df_1y.empty:
+            past_1y_price = price_df_1y["종가"].iloc[0]
+            data["return_1y"] = round((current / past_1y_price - 1) * 100, 2)
 
-            if not past_1y_series.empty:
-                data["return_1y"] = round((current / past_1y_series.iloc[-1] - 1) * 100, 2)
-            if not past_3y_series.empty:
-                data["return_3y"] = round((current / past_3y_series.iloc[-1] - 1) * 100, 2)
-        else:
-            print(f"yfinance: No 'Adj Close' data or historical data found for {ticker}")
+        date_3y = (datetime.today() - timedelta(days=365 * 3)).strftime("%Y%m%d")
+        price_df_3y = price_df.loc[price_df.index >= date_3y]
+        if not price_df_3y.empty:
+            past_3y_price = price_df_3y["종가"].iloc[0]
+            data["return_3y"] = round((current / past_3y_price - 1) * 100, 2)
+
+        finance = stock.get_market_fundamental_by_date(fromdate=today, todate=today, ticker=ticker)
+        if not finance.empty:
+            data["per"] = round(finance["PER"].iloc[0], 2) if finance["PER"].iloc[0] else None
+            data["roe"] = round(finance["ROE"].iloc[0], 2) if finance["ROE"].iloc[0] else None
+
+        corp_info = stock.get_market_cap_by_date(fromdate=today, todate=today, ticker=ticker)
+        if not corp_info.empty:
+            data["market_cap"] = int(corp_info["시가총액"].iloc[0])
 
     except Exception as e:
-        print("yfinance error", e)
+        print("pykrx error", e)
 
     return data
 
 
 def build_stock_info(ticker: str):
-    if not ticker:
-        return None
-
     try:
-        tk = yf.Ticker(ticker)
-        info = tk.info
-        name = info.get("longName") or info.get("shortName") or ticker
-        summary = info.get("sector")
-        description = info.get("longBusinessSummary")
-
-        products = []
-        if description:
-            sentences = re.split(r"[\n\.]+", description)
-            for s in sentences:
-                s = s.strip()
-                if s:
-                    products.append(s)
-                if len(products) >= 3:
-                    break
-
+        name = stock.get_market_ticker_name(ticker)
         return {
             "name": name,
-            "summary": summary,
-            "description": description,
-            "products": products,
+            "summary": "상세 업종 정보는 제공되지 않습니다.",
+            "description": "공식 사업 내용은 별도로 확인해 주세요.",
+            "products": [],
         }
     except Exception as e:
         print("build_stock_info error", e)
@@ -148,245 +117,134 @@ def build_stock_info(ticker: str):
 
 SYSTEM_PROMPT_TEMPLATE = """
 너는 주식과 회사 정보를 중학생도 이해할 수 있게 쉽게 설명해 주는 봇이야.
-투자 판단은 하지 않더라도, 과거 수익률, ROE, PER, 부채비율 같은 수치를 기반으로 종목을 객관적으로 설명해줘. 투자 여부는 판단하지 않아도 되지만, 투자 참고가 될 만한 정보를 제공해줘.
-
-아래 형식을 따라 대답해:
-📌 [요약]
-핵심 내용을 한 문장으로 알려줘
-
-📖 [상세 설명]
-중학생 눈높이에 맞춰 간단하게 설명
-
-📦 [주요 제품]
-기업이나 서비스의 핵심 제품을 한 줄로 알려줘
+추가설명 - 중학생 눈높이 이런건 안적어도 돼, 그냥 부가 설명이라고 해, 
+진짜 중학생한테 알려주는게 아니라 중학생도 이해할수 있을 정도로 설명하는게 목표야
+주의사항같은거 말하지말고 마지막에 그냥
+투자의 책임은 본인에게 있습니다 한마디만 넣어줘
+마크다운언어로 예쁘게 작성해줘
 """
 
-
-ANALYSIS_SYSTEM_PROMPT = """
-📌 System Prompt (GPT-4o용, 로직 중심)
-
-너는 초보 투자자를 위한 친절하고 신뢰도 높은 주식 설명 도우미이다.
-사용자가 제시한 여러 기업 중에서 다음 조건에 따라 평가하고 답변을 구성하라:
-
-기업은 '부실예정기업' 여부에 따라 사전에 구분되어 입력된다.
-
-"부실예정"으로 표시된 기업은 무조건 추천 대상에서 제외하며, 해당 사실을 간단히 언급만 하고 추가 설명은 하지 않는다.
-
-"정상기업"으로 분류된 기업은 아래 정보를 사용자에게 다음 형식에 따라 설명한다:
-
-🧱 1단계: 제품 설명
-
-각 기업의 주요 제품 2개를 사용자에게 설명한다.
-
-설명은 "중학생이 이해할 수 있을 만큼 쉽고 비유적인 문장"으로 구성한다.
-
-예: "스마트폰은 인터넷도 되고 게임도 되는 손안의 작은 컴퓨터예요."
-
-📈 2단계: 과거 수익률
-
-해당 기업의 1년 전과 3년 전 투자 시점 기준 수익률(%)을 표로 정리한다.
-
-수익률은 사용자에게 긍정/부정 여부보다 사실 그대로 보여준다.
-
-표 제목은 "과거 수익률 (기준일: {date})"로 시작한다.
-
-💬 3단계: 애널리스트 투자의견 요약
-
-해당 기업에 대해 수집된 애널리스트 투자의견을 요약해 제공한다.
-
-포함 항목:
-
-종합 투자의견 (매수 / 중립 / 매도)
-
-의견 분포 (매수 몇 명 / 중립 몇 명 / 매도 몇 명)
-
-평균 목표주가
-
-현재 주가 대비 상승 여력 (%)
-
-위 정보를 다시 표 형식으로 정리하며, 출처와 기준일을 명시한다.
-
-응답 구조는 항상 다음 3단계로 구성한다:
-
-주요 제품 설명
-
-과거 수익률 표
-
-투자의견 요약 표
-(단, 부실예정기업은 제외하되 그 사실은 처음에 명시함)
-
-어투는 친절하고 신뢰감을 주되, 간결하고 일관된 구조로 답변한다.
-
-만약 사용자 입력에 기업 이름과 정보가 JSON 등 구조화 형태로 주어진다면, 그 구조를 기반으로 해당 규칙에 따라 문장을 구성한다.
-"""
-
-# CHAT_FORMAT_PROMPT에서 '최신뉴스' 부분 제거
 CHAT_FORMAT_PROMPT = """
 아래 형식에 맞춰 한국어로 답변해주세요.
 
-부도예측 결과
-<부도 가능성 한 문장>
-해당 기업 주요매출 제품
-<주요제품 또는 서비스 1>
-<주요제품 또는 서비스 2>
-"""
+##부도예측 결과
+- 부도 가능성 한 문장
 
+##해당 기업 주요매출 제품
+###<주요제품 또는 서비스 1>
+- 두줄정도설명
+
+###<주요제품 또는 서비스 2>
+- 두줄정도설명
+
+##부가설명
+- 그냥 회사에 대한 설립일이랑 개요만 설명해
+
+##최신뉴스
+- 너가 해당기업에 대한 최신뉴스 2개 정도 조회해서 제목 적고 링크걸어줘
+
+####투자의 책임은 본인에게 있습니다
+"""
 
 class ChatRequest(BaseModel):
     message: str
-
-
-class EvaluateRequest(BaseModel):
-    companies: list
-
 
 @app.post("/chat")
 async def chat(req: ChatRequest):
     user_msg = req.message.strip()
     if not user_msg:
-        return {
-            "reply": "메시지를 입력해주세요.",
-            "name": None,
-            "per": None,
-            "roe": None,
-            "debt_ratio": None,
-            "sales": None,
-            "market_cap": None,
-            "main_products": None,
-            "return_1y": None,
-            "return_3y": None,
-            "stock_info": None,
-        }
-
-    profile = "장기/안정형"
+        return {"reply": "메시지를 입력해주세요."}
 
     ticker, stock_name = extract_ticker(user_msg)
     stock_info = build_stock_info(ticker) if ticker else None
 
-    symbol_id = None
-    overview_text = None
+    # symbol_id = overview_text = None
     news_items: List[dict] = []
 
-    # 검색어에 해당하는 심볼 조회
+    # try:
+    #     symbol_id = search_symbol(stock_name or user_msg)
+    #     if symbol_id:
+    #         overview_text = get_company_overview(symbol_id)
+    #         news_items = get_latest_news(symbol_id, limit=2)
+    # except Exception as e:
+    #     print("deepsearch error", e)
+
+    data = fetch_stock_data(ticker) if ticker else {}
+    main_products = data.get("main_products")
+
+    
+    formatted_news_html = "\n최신뉴스\n뉴스 없음"  # deepsearch 주석 처리로 뉴스 없음 고정
+
+    model = genai.GenerativeModel("gemini-1.5-flash")
     try:
-        symbol_id = search_symbol(stock_name or user_msg)
-    except Exception as e:
-        print("deepsearch search_symbol error", e)
-
-    if symbol_id:
-        try:
-            overview_text = get_company_overview(symbol_id)
-            news_items = get_latest_news(symbol_id, limit=2)
-        except Exception as e:
-            print("deepsearch info error", e)
-
-    system_content = f"{SYSTEM_PROMPT_TEMPLATE}\n{CHAT_FORMAT_PROMPT}\n사용자 투자 성향: {profile}"
-    messages = [
-        {"role": "system", "content": system_content},
-        {"role": "user", "content": user_msg},
-    ]
-
-    per = roe = debt_ratio = sales = market_cap = None
-    main_products = None
-    return_1y = return_3y = None
-
-    if ticker:
-        data = fetch_stock_data(ticker)
-        per = data["per"]
-        roe = data["roe"]
-        debt_ratio = data["debt_ratio"]
-        sales = data["sales"]
-        market_cap = data["market_cap"]
-        main_products = data["main_products"]
-        return_1y = data["return_1y"]
-        return_3y = data["return_3y"]
-
-    # DeepSearch에서 주요 제품과 뉴스 추출
-    if overview_text and not main_products:
-        prods = parse_main_products(overview_text)
-        if prods:
-            main_products = "\n".join(prods)
-
-    # **뉴스 링크를 HTML <a> 태그로 직접 생성**
-    formatted_news_html = ""
-    if news_items:
-        news_lines_html = []
-        for n in news_items:
-            if n.get('link'): # 링크가 존재하는지 확인
-                news_lines_html.append(f"제목: {n['title']} <a href='{n['link']}' target='_blank'>[링크]</a>")
-            else:
-                news_lines_html.append(f"제목: {n['title']} (링크 없음)")
-        formatted_news_html = "\n최신뉴스\n" + "\n".join(news_lines_html)
-    else:
-        formatted_news_html = "\n최신뉴스\n뉴스 없음"
-
-    # 주요 제품 정보만 GPT 컨텍스트에 추가
-    context_for_gpt = []
-    if main_products:
-        context_for_gpt.append("주요 제품:\n" + "\n".join(main_products.split("\n")))
-    if context_for_gpt:
-        messages.append({"role": "system", "content": "\n".join(context_for_gpt)})
-
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages,
-        )
-        answer = response.choices[0].message.content.strip()
-        # GPT 응답에 직접 포맷팅된 뉴스 HTML 추가
-        answer += formatted_news_html
-    except Exception as e:
-        print("🔥 GPT API 호출 중 에러:", e)
-        # GPT 호출 실패 시 기본 형식으로 구성 (뉴스도 HTML 링크로)
-        answer_lines = ["부도예측 결과"]
-        answer_lines.append("API 호출 중 오류가 발생했습니다. 일부 정보를 제공할 수 없습니다.") # 오류 메시지 수정
-        answer_lines.append("해당 기업 주요매출 제품")
+        context_parts = [SYSTEM_PROMPT_TEMPLATE, CHAT_FORMAT_PROMPT]
         if main_products:
-            for p in main_products.split("\n"):
-                answer_lines.append(f"- {p}")
-        else:
-            answer_lines.append("정보 없음")
-        answer_lines.append(formatted_news_html) # 뉴스 HTML을 fallback에도 추가
-        answer = "\n".join(answer_lines)
+            context_parts.append("주요 제품:\n" + main_products)
+
+        prompt = "\n".join(context_parts) + f"\n사용자 질문: {user_msg}"
+        response = model.generate_content(prompt)
+        answer = response.text.strip() + formatted_news_html
+    except Exception as e:
+        print("🔥 Gemini API 오류:", e)
+        answer = f"부도예측 결과\n오류로 정보를 불러오지 못했습니다.\n해당 기업 주요매출 제품\n{main_products or '정보 없음'}\n{formatted_news_html}"
 
     return {
         "reply": answer,
         "name": stock_name,
-        "per": per,
-        "roe": roe,
-        "debt_ratio": debt_ratio,
-        "sales": sales,
-        "market_cap": market_cap,
+        "per": data.get("per"),
+        "roe": data.get("roe"),
+        "debt_ratio": data.get("debt_ratio"),
+        "sales": data.get("sales"),
+        "market_cap": data.get("market_cap"),
         "main_products": main_products,
-        "return_1y": return_1y,
-        "return_3y": return_3y,
+        "return_1y": data.get("return_1y"),
+        "return_3y": data.get("return_3y"),
         "stock_info": stock_info,
         "news": news_items,
+        "stock_code": ticker,
     }
 
-
-@app.post("/evaluate")
-async def evaluate(req: EvaluateRequest):
-    companies = req.companies
-    today = datetime.now().strftime("%Y년 %m월 %d일")
-    system_content = ANALYSIS_SYSTEM_PROMPT.format(date=today)
-    messages = [
-        {"role": "system", "content": system_content},
-        {"role": "user", "content": json.dumps(companies, ensure_ascii=False)},
-    ]
+# 이미지 플롯 생성 API
+@app.get("/plot.png")
+async def get_plot(stock_code: str = Query(..., alias="ticker")):
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=messages,
-        )
-        result = response.choices[0].message.content.strip()
-    except Exception as e:
-        print("🔥 GPT API 호출 중 에러:", e)
-        result = "API 호출 중 오류가 발생했습니다."
-    return {"reply": result}
+        predictor = AdvancedStockPredictor(stock_code)
+        threeago = datetime.today() - timedelta(days=365 * 3)
+        predictor.load_data(start_date=threeago)
+        forecasts = predictor.comprehensive_forecast()
+        trend_signal, trend_changes, ma_short, ma_long = predictor.detect_regime_changes()
+        var_95, max_drawdown, drawdown = predictor.calculate_downside_risk()
 
+        buf = io.BytesIO()
+        fig, ax1 = plt.subplots(figsize=(8, 6))
+
+        # 주가 및 이동평균선
+        ax1.plot(predictor.df_monthly.index, predictor.df_monthly.values, label='주가', color='black', linewidth=2)
+        ax1.plot(ma_short.index, ma_short.values, label='6개월 이동평균선', alpha=0.7, color='blue')
+        ax1.plot(ma_long.index, ma_long.values, label='1년 이동평균선', alpha=0.7, color='orange')
+
+        # 예측 구간 음영
+        ax1.fill_between(forecasts['dates'], forecasts['monte_carlo'][1], forecasts['monte_carlo'][0],
+                         alpha=0.3, color='red', label='예측범위')
+
+        # 스타일 적용
+        ax1.set_ylabel('주가(원)', fontsize=18)
+        ax1.set_xlabel('날짜', fontsize=18)
+        ax1.tick_params(axis='both', labelsize=18)
+        ax1.legend(fontsize=18)
+        ax1.grid(True, alpha=0.3)
+
+        plt.tight_layout()
+        plt.savefig(buf, format='png')
+        plt.close(fig)
+        buf.seek(0)
+
+        return StreamingResponse(buf, media_type="image/png")
+
+    except Exception as e:
+        print("🔥 Plot 오류:", e)
+        return {"error": "차트 생성에 실패했습니다."}
 
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(app, host="127.0.0.1", port=8000)
